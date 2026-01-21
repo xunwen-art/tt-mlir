@@ -25,7 +25,6 @@
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -1167,6 +1166,115 @@ void d2m::ViewLayoutOp::getCanonicalizationPatterns(
         op, newMemref, streamOp.getInput(), streamOp.getStorage());
     return success();
   });
+}
+
+//===----------------------------------------------------------------------===//
+// CompositeViewOp
+//===----------------------------------------------------------------------===//
+
+Value d2m::CompositeViewOp::getInput() {
+  llvm_unreachable("Composite view must have all its inputs handled");
+}
+
+bool d2m::CompositeViewOp::isComposite() { return true; }
+
+SmallVector<Value> d2m::CompositeViewOp::getCompositeInputs() {
+  return SmallVector<Value>(getInputs().begin(), getInputs().end());
+}
+
+bool d2m::CompositeViewOp::bufferizesToMemoryRead(
+    mlir::OpOperand &, const mlir::bufferization::AnalysisState &) {
+  return false;
+}
+
+bool d2m::CompositeViewOp::bufferizesToMemoryWrite(
+    mlir::OpOperand &, const mlir::bufferization::AnalysisState &) {
+  return false;
+}
+
+LogicalResult d2m::CompositeViewOp::bufferize(
+    mlir::RewriterBase &rewriter,
+    const mlir::bufferization::BufferizationOptions &options,
+    mlir::bufferization::BufferizationState &state) {
+  // NOLINTBEGIN(clang-analyzer-core.StackAddressEscape)
+  SmallVector<Value> bufferizedInputs;
+  for (Value input : getInputs()) {
+    auto maybeBuffer =
+        mlir::bufferization::getBuffer(rewriter, input, options, state);
+    if (failed(maybeBuffer)) {
+      return maybeBuffer;
+    }
+    bufferizedInputs.push_back(*maybeBuffer);
+  }
+
+  SmallVector<Value> invocationStack;
+  auto outMemrefTypeOr =
+      getBufferType(getResult(), options, state, invocationStack);
+  if (failed(outMemrefTypeOr)) {
+    return outMemrefTypeOr;
+  }
+
+  auto outMemrefType = mlir::cast<MemRefType>(*outMemrefTypeOr);
+  auto newOp = rewriter.create<d2m::CompositeViewOp>(
+      getLoc(), outMemrefType, bufferizedInputs, getDim());
+  mlir::bufferization::replaceOpWithBufferizedValues(rewriter, *this,
+                                                     newOp.getResult());
+  return success();
+  // NOLINTEND(clang-analyzer-core.StackAddressEscape)
+}
+
+// This isn't aliasing any single input and is meant to create a new tensor.
+mlir::bufferization::AliasingValueList d2m::CompositeViewOp::getAliasingValues(
+    mlir::OpOperand &, const mlir::bufferization::AnalysisState &) {
+  mlir::bufferization::AliasingValueList result;
+  return result;
+}
+
+mlir::FailureOr<mlir::bufferization::BufferLikeType>
+d2m::CompositeViewOp::getBufferType(
+    mlir::Value value, const mlir::bufferization::BufferizationOptions &,
+    const mlir::bufferization::BufferizationState &, SmallVector<Value> &) {
+  return ttcore::getBufferType(value.getType(), /*isView=*/true);
+}
+
+mlir::LogicalResult d2m::CompositeViewOp::verify() {
+  auto resultType = this->getResult().getType();
+
+  int32_t rank = 0;
+  SmallVector<int64_t> outShape;
+  SmallVector<SmallVector<int64_t>> inShapes;
+
+  const bool isMemrefType = mlir::isa<MemRefType>(resultType);
+
+  if (isMemrefType) {
+    auto outType = mlir::cast<MemRefType>(resultType);
+    outShape.append(outType.getShape().begin(), outType.getShape().end());
+    rank = static_cast<int32_t>(outShape.size()); // 2x as large.
+    for (auto operand : this->getInputs()) {
+      auto inShape = mlir::cast<MemRefType>(operand.getType()).getShape();
+      inShapes.emplace_back(inShape);
+      if (inShape.size() != static_cast<size_t>(rank)) {
+        return emitOpError("Incompatiable input shape.");
+      }
+    }
+  } else {
+    auto outType = mlir::cast<RankedTensorType>(resultType);
+    outShape.append(outType.getShape().begin(), outType.getShape().end());
+    rank = static_cast<int32_t>(outShape.size());
+    for (auto operand : this->getInputs()) {
+      auto inShape = mlir::cast<RankedTensorType>(operand.getType()).getShape();
+      inShapes.emplace_back(inShape);
+      if (inShape.size() != static_cast<size_t>(rank)) {
+        return emitOpError("Incompatiable input shape.");
+      }
+    }
+  }
+
+  if (this->getDim() < 0 || this->getDim() >= rank) {
+    return emitOpError("Composite view dim out of range.");
+  }
+
+  return mlir::success();
 }
 
 //===----------------------------------------------------------------------===//

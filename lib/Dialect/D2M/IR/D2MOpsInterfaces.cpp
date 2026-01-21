@@ -28,6 +28,10 @@ mlir::tt::d2m::applyViews(mlir::Operation *op) {
         resultMemref, mlir::AffineMap::getMultiDimIdentityMap(
                           resultMemref.getRank(), resultMemref.getContext()));
   }
+  // applyViews is meant to be 1-1, composite views should have been expanded
+  // before reaching this point (assuming we don't create nested composite
+  // views).
+  assert(!viewOp.isComposite());
 
   auto viewAttr = mlir::cast<ttcore::ViewLayoutAttr>(resultMemref.getLayout());
   auto map = viewAttr.getAffineMap();
