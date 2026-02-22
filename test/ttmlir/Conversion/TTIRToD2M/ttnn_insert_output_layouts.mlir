@@ -15,9 +15,14 @@
 
 
 // CHECK: #layout1 = #ttcore.metal_layout<logical_shape = 1024x1024, dim_alignments = 32x32, collapsed_intervals
+// CHECK-SAME: dram
+// CHECK: #layout2 = #ttcore.metal_layout<logical_shape = 1024x1024, dim_alignments = 32x32, collapsed_intervals
+// CHECK-SAME: l1
 // CHECK: #layout3 = #ttcore.metal_layout<logical_shape = 2048x2048, dim_alignments = 32x32, collapsed_intervals
+// CHECK-SAME: l1
+// CHECK: #layout4 = #ttcore.metal_layout<logical_shape = 512x256, dim_alignments = 32x32, collapsed_intervals
+// CHECK-SAME: l1
 // CHECK: #layout5 = #ttcore.metal_layout<logical_shape = 512x256, dim_alignments = 32x32, collapsed_intervals
-
 
 // Output Layouts
 // 1024x1024 on 8x8 L1 Block Sharded
@@ -40,11 +45,11 @@ func.func @dram_to_l1_block_sharded(
     %0 = "ttir.abs"(%arg0) : (tensor<1024x1024xbf16, #ttnn_layout>) -> tensor<1024x1024xbf16, #ttnn_layout>
 
     // CHECK: %[[EMPTY:.*]] = d2m.empty() : tensor<1024x1024xbf16, #ttnn_layout1>
-    // CHECK: %[[CAST1:.*]] = ttir.ttnn_metal_layout_cast %[[EMPTY]] : tensor<1024x1024xbf16, #ttnn_layout1> -> tensor<8x8x4x4x!ttcore.tile<32x32, bf16>, #layout1>
+    // CHECK: %[[CAST1:.*]] = ttir.ttnn_metal_layout_cast %[[EMPTY]] : tensor<1024x1024xbf16, #ttnn_layout1> -> tensor<8x8x4x4x!ttcore.tile<32x32, bf16>, #layout2>
     %1 = ttir.empty() : tensor<1024x1024xbf16, #ttnn_layout1>
 
-    // CHECK: %[[TOLAYOUT:.*]] = d2m.to_layout %[[GENERIC]], %[[CAST1]] : tensor<8x8x4x4x!ttcore.tile<32x32, bf16>, #layout2> into tensor<8x8x4x4x!ttcore.tile<32x32, bf16>, #layout1> -> tensor<8x8x4x4x!ttcore.tile<32x32, bf16>, #layout1>
-    // CHECK: %[[CAST2:.*]] = ttir.ttnn_metal_layout_cast %[[TOLAYOUT]] : tensor<8x8x4x4x!ttcore.tile<32x32, bf16>, #layout1> -> tensor<1024x1024xbf16, #ttnn_layout1>
+    // CHECK: %[[TOLAYOUT:.*]] = d2m.to_layout %[[GENERIC]], %[[CAST1]] : tensor<8x8x4x4x!ttcore.tile<32x32, bf16>, #layout1> into tensor<8x8x4x4x!ttcore.tile<32x32, bf16>, #layout2> -> tensor<8x8x4x4x!ttcore.tile<32x32, bf16>, #layout2>
+    // CHECK: %[[CAST2:.*]] = ttir.ttnn_metal_layout_cast %[[TOLAYOUT]] : tensor<8x8x4x4x!ttcore.tile<32x32, bf16>, #layout2> -> tensor<1024x1024xbf16, #ttnn_layout1>
     %2 = ttir.to_layout %0, %1 : tensor<1024x1024xbf16, #ttnn_layout> into tensor<1024x1024xbf16, #ttnn_layout1> -> tensor<1024x1024xbf16, #ttnn_layout1>
 
     //CHECK: return %[[CAST2]] : tensor<1024x1024xbf16, #ttnn_layout1>
