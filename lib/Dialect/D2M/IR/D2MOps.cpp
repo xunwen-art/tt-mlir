@@ -1566,30 +1566,17 @@ static mlir::LogicalResult verifyAffineBlocking(
   return mlir::success();
 }
 
-Operation::operand_range d2m::GenericOp::getInputOutputOperands() {
+Operation::operand_range d2m::GenericOp::getInputsAndOutputs() {
   return Operation::operand_range(getOperands().begin(),
                                   getOperands().begin() + getInputs().size() +
                                       getOutputs().size());
 }
 
-MutableArrayRef<OpOperand> d2m::GenericOp::getInputOutputOpOperands() {
+MutableArrayRef<OpOperand> d2m::GenericOp::getInputsAndOutputsMutable() {
   return MutableArrayRef<OpOperand>(getOperation()->getOpOperands().begin(),
                                     getOperation()->getOpOperands().begin() +
                                         getInputs().size() +
                                         getOutputs().size());
-}
-
-MutableArrayRef<OpOperand> d2m::GenericOp::getAdditionalArgOpOperands() {
-  return MutableArrayRef<OpOperand>(getOperation()->getOpOperands().begin() +
-                                        getInputs().size() +
-                                        getOutputs().size(),
-                                    getOperation()->getOpOperands().end());
-}
-
-Operation::operand_range d2m::GenericOp::getAdditionalArgOperands() {
-  return Operation::operand_range(getOperands().begin() + getInputs().size() +
-                                      getOutputs().size(),
-                                  getOperands().end());
 }
 
 // GenericOp verification
@@ -1769,7 +1756,7 @@ Operation::operand_range d2m::GenericOp::getAdditionalArgOperands() {
   if (hasGrid && !indexingMaps.empty()) {
     // Validate that all operands have device layouts before calling
     // getInputOutputOperandGridShapes(), which assumes layouts are present
-    for (Value operand : getInputOutputOperands()) {
+    for (Value operand : getInputsAndOutputs()) {
       auto result =
           llvm::TypeSwitch<Type, LogicalResult>(operand.getType())
               .Case<MemRefType>([&](MemRefType memrefType) -> LogicalResult {
@@ -1841,7 +1828,7 @@ Operation::operand_range d2m::GenericOp::getAdditionalArgOperands() {
   }
 
   ValueTypeRange<OperandRange> inputOutputOperandTypes =
-      getInputOutputOperands().getTypes();
+      getInputsAndOutputs().getTypes();
   auto *firstRegion = getRegions().begin();
   for (Region &region : getRegions()) {
     if (!region.hasOneBlock()) {
@@ -1942,30 +1929,26 @@ Operation::operand_range d2m::GenericOp::getAdditionalArgOperands() {
 
   // Verify that any values used in regions that are defined outside
   // must be operands of this GenericOp.
-  for (Region &region : getRegions()) {
-    for (Block &block : region) {
-      for (Operation &op : block) {
-        for (Value operand : op.getOperands()) {
-          // Skip block arguments - they're defined within the region.
-          if (mlir::isa<BlockArgument>(operand)) {
-            continue;
-          }
+  getOperation()->walk([&](Operation *nestedOp) {
+    // Skip block arguments - they're defined within the region.
+    for (Value operand : nestedOp->getOperands()) {
+      if (mlir::isa<BlockArgument>(operand)) {
+        continue;
+      }
 
-          // Check if the operand is defined outside this GenericOp.
-          Operation *definingOp = operand.getDefiningOp();
-          if (definingOp && !getOperation()->isAncestor(definingOp)) {
-            // It's defined outside - check if it's one of our operands.
-            bool isOurOperand = llvm::is_contained(getOperands(), operand);
-            if (!isOurOperand) {
-              return emitOpError("region uses value defined outside that is "
-                                 "not an operand of this generic op: ")
-                     << operand;
-            }
-          }
+      // Check if the operand is defined outside this GenericOp.
+      Operation *definingOp = operand.getDefiningOp();
+      if (definingOp && !getOperation()->isAncestor(definingOp)) {
+        // It's defined outside - check if it's one of our operands.
+        bool isOurOperand = llvm::is_contained(getOperands(), operand);
+        if (!isOurOperand) {
+          emitOpError("region uses value defined outside that is "
+                      "not an operand of this generic op: ")
+              << operand;
         }
       }
     }
-  }
+  });
 
   return success();
 }
@@ -2231,7 +2214,7 @@ mlir::SmallVector<int64_t> d2m::GenericOp::getFullBlockFactors() {
       ttmlir::utils::concatInversePermutationMap(maps, /*reverse=*/false);
 
   SmallVector<int64_t> flattenedOperandShardShapes;
-  for (Value v : getInputOutputOperands()) {
+  for (Value v : getInputsAndOutputs()) {
     auto shapedType = mlir::cast<ShapedType>(v.getType());
     ttcore::DeviceLayoutInterface layout = ttcore::getDeviceLayout(shapedType);
     TT_assertv(
@@ -2262,8 +2245,8 @@ bool d2m::GenericOp::isOutputOperandIdx(unsigned int operandIndex) {
 mlir::SmallVector<mlir::SmallVector<int64_t>>
 d2m::GenericOp::getInputOutputOperandGridShapes() {
   SmallVector<SmallVector<int64_t>> gridShapes;
-  gridShapes.reserve(getInputOutputOperands().size());
-  for (auto operand : this->getInputOutputOperands()) {
+  gridShapes.reserve(getInputsAndOutputs().size());
+  for (auto operand : this->getInputsAndOutputs()) {
     if (auto memrefType = mlir::dyn_cast<MemRefType>(operand.getType())) {
       mlir::tt::ttcore::DeviceLayoutInterface layout =
           mlir::cast<mlir::tt::ttcore::DeviceLayoutInterface>(
@@ -2286,9 +2269,9 @@ d2m::GenericOp::getInputOutputOperandGridShapes() {
 mlir::SmallVector<mlir::SmallVector<int64_t>>
 d2m::GenericOp::getInputOutputOperandShardShapes(bool convertTileToScalar) {
   SmallVector<SmallVector<int64_t>> shardShapes;
-  shardShapes.reserve(getInputOutputOperands().size());
+  shardShapes.reserve(getInputsAndOutputs().size());
 
-  for (auto operand : this->getInputOutputOperands()) {
+  for (auto operand : this->getInputsAndOutputs()) {
     auto shapedType = mlir::cast<ShapedType>(operand.getType());
 
     mlir::tt::ttcore::DeviceLayoutInterface layout;
@@ -2367,7 +2350,7 @@ std::optional<SmallVector<int64_t>> d2m::GenericOp::computeGridDimConstraints(
   // predicate.
   SmallVector<SmallVector<int64_t>> filteredShapes;
   SmallVector<AffineMap> filteredIndexingMaps;
-  for (auto [operandIdx, operand] : llvm::enumerate(getInputOutputOperands())) {
+  for (auto [operandIdx, operand] : llvm::enumerate(getInputsAndOutputs())) {
     auto metalTensor = mlir::cast<mlir::RankedTensorType>(operand.getType());
     auto baseMetalLayout =
         mlir::cast<ttcore::MetalLayoutAttr>(metalTensor.getEncoding());
