@@ -45,15 +45,17 @@ static void runPagedScaledDotProductAttentionDecodeOp(
 
   auto programConfig =
       std::make_optional<::ttnn::operations::transformer::SDPAProgramConfig>();
-  programConfig->k_chunk_size = 32; // Required for non-causal
   programConfig->compute_with_storage_grid_size =
       query.device()->compute_with_storage_grid_size();
+  if (!isCausal) {
+    programConfig->k_chunk_size = 32; // Required for non-causal
+  }
 
   ::ttnn::Tensor out =
       ::ttnn::transformer::paged_scaled_dot_product_attention_decode(
           query, key, value, pageTable, isCausal, attentionMask, curPosTensor,
           attentionSink, scale, slidingWindowSize, outputMemoryConfig,
-          /*program_config=*/isCausal ? std::nullopt : programConfig,
+          /*program_config=*/programConfig,
           /*compute_kernel_config=*/std::nullopt);
   tensorPool.insertTTNNTensorAndValidate(op->out(), out);
 }
