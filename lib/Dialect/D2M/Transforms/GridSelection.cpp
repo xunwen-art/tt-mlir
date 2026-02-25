@@ -136,21 +136,25 @@ computeOptimalVirtualGrid(ArrayRef<int64_t> physicalShape,
 // Grid optimization utilities
 // ----------------------------------------------------------------------------
 
+// Returns the tensor tile shape when tiled, otherwise the default tile shape.
+// This keeps physical-shape computations tile-aligned for non-tiled tensors.
+static llvm::SmallVector<int64_t>
+getTensorTileShapeOrDefault(mlir::RankedTensorType tensorType) {
+  if (auto tileType =
+          mlir::dyn_cast<ttcore::TileType>(tensorType.getElementType())) {
+    return llvm::to_vector(tileType.getShape());
+  }
+  return llvm::to_vector(ttcore::TileType::getDefaultShape());
+}
+
 // Compute physical shape for a MetalLayoutAttr by first computing grid-aware
 // dimension alignments and then deriving the physical shape (always
 // tile-aligned).
-static llvm::SmallVector<int64_t> computePhysicalShape(
+static llvm::SmallVector<int64_t> computeComputeGridAwarePaddedPhysicalShape(
     ttcore::MetalLayoutAttr layout, mlir::RankedTensorType tensorType,
     ArrayRef<int64_t> targetSquareGridShape, OpBuilder &builder) {
-  llvm::SmallVector<int64_t> tileShape;
-  if (auto tileType =
-          mlir::dyn_cast<ttcore::TileType>(tensorType.getElementType())) {
-    tileShape = llvm::to_vector(tileType.getShape());
-  } else {
-    // Always tile-align when calculating the physical shape, even in the row
-    // major case.
-    tileShape = llvm::to_vector(ttcore::TileType::getDefaultShape());
-  }
+  llvm::SmallVector<int64_t> tileShape =
+      getTensorTileShapeOrDefault(tensorType);
 
   llvm::SmallVector<int64_t> alignments =
       ttcore::MetalLayoutAttr::computeGridAwareDimAlignments(
@@ -600,8 +604,9 @@ analyzeOperandsAndComputeGrids(d2m::GenericOp genericOp,
 
     // Compute physical shape and find the optimal grid that evenly divides
     // it.
-    llvm::SmallVector<int64_t> physShape = computePhysicalShape(
-        operandLayout, operandType, targetSquareGridShape, builder);
+    llvm::SmallVector<int64_t> physShape =
+        computeComputeGridAwarePaddedPhysicalShape(
+            operandLayout, operandType, targetSquareGridShape, builder);
 
     // Interleaved tensors do not support virtual grids
     auto [optimalGrid, isVirtualGrid] =
@@ -626,8 +631,9 @@ analyzeOperandsAndComputeGrids(d2m::GenericOp genericOp,
           auto inputLayout =
               mlir::cast<ttcore::MetalLayoutAttr>(inputType.getEncoding());
 
-          llvm::SmallVector<int64_t> inputPhysShape = computePhysicalShape(
-              inputLayout, inputType, targetSquareGridShape, builder);
+          llvm::SmallVector<int64_t> inputPhysShape =
+              computeComputeGridAwarePaddedPhysicalShape(
+                  inputLayout, inputType, targetSquareGridShape, builder);
           auto [inputOptimalGrid, isVirtualGrid] = computeOptimalGrid(
               inputType, inputPhysShape, targetSquareGridShape);
 
@@ -1030,7 +1036,6 @@ static bool hasTTNNOperands(d2m::GenericOp genericOp) {
 static llvm::SmallVector<llvm::SmallVector<int64_t>>
 computeTTNNGenericGridShapes(GenericOp genericOp,
                              ArrayRef<int64_t> targetSquareGridShape) {
-
   auto optimalOperandGrids =
       llvm::SmallVector<llvm::SmallVector<int64_t>>(genericOp.getNumOperands());
 
@@ -1061,6 +1066,7 @@ computeTTNNGenericGridShapes(GenericOp genericOp,
   for (auto [operandIdx, operand] : llvm::enumerate(genericOp.getOperands())) {
 
     auto constrainedDims = getConstrainedDims(operandIdx);
+
     // if all dims are constrained, use the constrained dims.
     if (allDimsConstrained(operandIdx)) {
       optimalOperandGrids[operandIdx] = getConstrainedDims(operandIdx);
@@ -1086,16 +1092,30 @@ computeTTNNGenericGridShapes(GenericOp genericOp,
         }
       }
 
-      auto physicalShape =
-          computePhysicalShape(baseMetalLayout, metalTensorType,
-                               constrainedTargetGridShape, builder);
-      optimalOperandGrids[operandIdx] =
-          computeOptimalGrid(metalTensorType, physicalShape,
-                             constrainedTargetGridShape)
-              .first;
+      llvm::SmallVector<int64_t> physicalShape;
+      // If operand is DRAM interleaved operand that is the result of a
+      // ttnn->metal cast, we must generate a view of the underlying ttnn tensor
+      // _without_ padding, as the underlying tensor also is unpadded.
+      bool isNonPaddableTTNNDRAMOperand =
+          operand.getDefiningOp<ttir::TTNNMetalLayoutCastOp>() &&
+          baseMetalLayout.getMemorySpace() == ttcore::MemorySpace::DeviceDRAM &&
+          baseMetalLayout.getMemoryLayout() ==
+              ttcore::TensorMemoryLayout::Interleaved;
+      if (isNonPaddableTTNNDRAMOperand) {
+        llvm::SmallVector<int64_t> tileShape =
+            getTensorTileShapeOrDefault(metalTensorType);
+        physicalShape = baseMetalLayout.getPhysicalShape(tileShape);
+      } else {
+        physicalShape = computeComputeGridAwarePaddedPhysicalShape(
+            baseMetalLayout, metalTensorType, constrainedTargetGridShape,
+            builder);
+      }
+
+      auto [optimalGrid, isVirtualGrid] = computeOptimalGrid(
+          metalTensorType, physicalShape, constrainedTargetGridShape);
+      optimalOperandGrids[operandIdx] = optimalGrid;
     }
   }
-
   return optimalOperandGrids;
 }
 
