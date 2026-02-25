@@ -426,7 +426,7 @@ struct TTIRToTTNNDevicePipelineOptions
       llvm::cl::desc(
           "Use the greedy layout propagation optimizer instead of the "
           "default chain-based TTNNOptimizer."),
-      llvm::cl::init(false)};
+      llvm::cl::init(true)};
 
   // Resolve options controlled by optimization_level.
   void resolveOptimizationLevelOptions() const {
