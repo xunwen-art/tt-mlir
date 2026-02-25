@@ -41,7 +41,7 @@ module {
       -> tensor<2x2x2x2x!ttcore.tile<32x32, f32>, #layout>
 
     // CHECK: ttmetal.enqueue_program
-    // CHECK-SAME: #ttmetal.kernel_args< ct_args = [{{.*}}<global_semaphore[0]>{{.*}}]
+    // CHECK-SAME: #ttmetal.kernel_args< ct_args = [{{.*}}<global_semaphore[2]>{{.*}}]
     // The below check is to ensure that the semaphore buffer is deallocated after the generic operation (i.e liveness analysis is working).
     %result = "d2m.generic"(%arg0_stream, %output_stream, %sem) <{
       block_factors = [],
